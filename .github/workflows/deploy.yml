@@ -1,0 +1,290 @@
+name: DevSecOps Security Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron:  '0 0 * * 0'   # this should be run weekly
+
+env:
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN  }}
+  #SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }
+  #SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }
+  SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+jobs:
+  gitleaks:
+    name: Run Gitleaks Secret Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+   
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch entire history for comprehensive scanning
+
+      - name: Run Gitleaks scan
+        uses: gitleaks/gitleaks-action@v2 # Use the latest stable version
+
+      - name: Run Gitleaks scan and save report
+        run: |
+          mkdir -p security/reports
+          gitleaks detect --source . \
+          --report-format json \
+          --report-path security/reports/gitleaks-report.json || true
+
+      - name: Upload Gitleaks report as artifact
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: gitleaks-reports
+          path: security/reports
+
+
+  lint:
+    name: Static Code Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Required to analyze all changes
+
+      # - name: Run SonarQube Scan
+      #   uses: SonarSource/sonarqube-scan-action@v5.0.0  #sonarsource/sonarqube-scan-action@v2
+      #   with:
+      #     projectBaseDir: .
+      #     args: >
+      #       -Dsonar.projectKey=my-project-key
+      #       -Dsonar.host.url=${{ secrets.SONAR_HOST_URL 
+      #       -Dsonar.login=${{ secrets.SONAR_TOKEN }
+
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }   # This is sensitive information — like a password or API token. So it's stored securely as a GitHub secret in repository under: Settings → Secrets and variables → Actions → Secrets. This hides the value from logs and protects it from being exposed.
+      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }  # This is not sensitive. It’s just a regular environment variable — the URL of your SonarQube server. You can define it once at the top of your workflow under env:  SONAR_HOST_URL: "http://your-sonarqube-server:9000"
+
+      # - name: Wait for SonarQube Quality Gate
+      #   id: sonarqube-quality-gate-check
+      #   uses: sonarsource/sonarqube-quality-gate-action@v1.2.0 #sonarsource/sonarqube-quality-gate-action@master  
+      #   with:
+      #     scanTimeout: '300'  # wait max 5 mins
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }
+      #     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }
+
+      #   continue-on-error: true
+
+      # - name: Save SonarQube scan logs
+      #   if: always()
+      #   run: |
+      #     mkdir -p security/reports
+      #     cp .scannerwork/report-task.txt security/reports/sonarqube-report.txt || echo "No report found"
+      
+      # - name: Upload SonarQube reports as artifact
+      #   uses: actions/upload-artifact@v3
+      #   with:
+      #     name: sonarqube-reports
+      #     path: security/reports
+
+
+      - name: SAST with Semgrep (CI)
+        uses: returntocorp/semgrep-action@v1 
+        with:
+          config: p/security-audit   # Uses the p/security-audit rule set (which focuses purely on security issues — like unsafe SQL, dangerous functions, etc.).
+          output: security/reports/semgrep-results.json  # Saves the results to a JSON report inside security/reports/semgrep-results.json.
+
+      - name: Upload SAST Reports  # Takes whatever is inside security/reports/ (like my Semgrep report), Uploads it as a build artifact in GitHub Actions, ou can download and review it later from the GitHub Actions “Artifacts” tab.
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: sast-reports
+          path: security/reports
+
+        continue-on-error: true
+  
+  
+  checkov:
+    name: Run Checkov IaC Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Checkov scan
+        run: |    #Installs Checkov directly instead of using the action, so you can customize output. Runs Checkov on your entire repo (-d .). The -o cli ensures readable output. Saves the output to a file so you can keep it for later.
+          pip install checkov     
+          checkov -d . --framework terraform -o cli > checkov-report.txt || true
+        continue-on-error: true
+
+      - name: Upload Checkov scan results as artifact  # Uploads the report so you can download it from the GitHub Actions page later.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkov-report
+          path: checkov-report.txt
+
+
+  Docker:
+    name: Run Docker Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker
+        uses: docker/setup-buildx-action@v4
+
+      - name: Login to Docker Hub     # # Logs into Docker Hub using secret username and password.
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install Docker Compose
+        run: |
+          sudo curl -L "https://github.com/docker/compose/releases/download/v2.24.7/docker-compose-linux-x86_64" -o /usr/local/bin/docker-compose
+          sudo chmod +x /usr/local/bin/docker-compose
+          docker-compose version
+
+      - name: Build Images from docker-compose
+        run: docker-compose build
+
+      - name: Tag and Push Docker Images
+        run: |
+          docker tag securitynexus-web:latest $DOCKERHUB_USERNAME/securitynexus-web:latest
+          docker push $DOCKERHUB_USERNAME/securitynexus-web:latest
+
+      - name: Bring up Containers
+        run: |
+          docker-compose down
+          docker-compose up -d
+          sleep 15
+  
+  snyk-scan:
+    name: Run Snyk Security Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true 
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Snyk to check for vulnerabilities in dependencies
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: test --all-projects --severity-threshold=medium
+
+      - name: Scan Docker image for vulnerabilities
+        uses: snyk/actions/docker@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          image: securitynexus-web:latest
+          args: --file=Dockerfile --severity-threshold=medium     # only flags medium+ severity issues
+
+      - name: Save Snyk scan results
+        run: |
+          mkdir -p snyk-reports
+          snyk test --json > snyk-reports/snyk-results.json || true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+      - name: Upload Snyk report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: snyk-report
+          path: snyk-reports/snyk-results.json
+
+  sbom:
+    name: Generate Software Bill of Materials
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          syft --version
+        continue-on-error: true
+
+      - name: Generate SBOM for source code
+        run: |           # Scans your entire source directory (dir:.). Exports SBOM in CycloneDX JSON format to sbom.json. Uploads it as an artifact
+          syft dir:. -o cyclonedx-json > sbom.json    
+
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-report
+          path: sbom.json
+
+  
+  trivy-scan:
+    name: Run Trivy Security Scans
+    runs-on: ubuntu-latest
+    continue-on-error: true 
+
+    steps:
+      # Step 1: Checkout your source code
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+       # Step 2: Install Trivy
+      - name: Install Trivy
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y wget
+          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz
+          tar zxvf trivy_Linux-64bit.tar.gz
+          sudo mv trivy /usr/local/bin/
+
+      # Step 3: Scan source code for vulnerabilities
+      - name: Scan file system (source code)
+        run: |
+          mkdir -p trivy-reports
+          trivy fs --exit-code 0 --format json -o trivy-reports/trivy-fs.json . || true
+
+      # Step 4: Scan Docker image (optional)
+      - name: Scan Docker image
+        run: |
+          trivy image --exit-code 0 --format json -o trivy-reports/trivy-image.json securitynexus-web:latest || true
+
+      # Step 5: Upload results as an artifact
+      - name: Upload Trivy reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-reports
+          path: trivy-reports
+
+  zap-scan:
+    name: Run OWASP ZAP DAST Scan
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    needs: Docker  # this ensures the app is running first
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run OWASP ZAP baseline scan
+        uses: zaproxy/action-baseline@v0.10.0
+        with:
+          target: 'http://localhost:5000'  # or your app URL
+
+      - name: Upload ZAP Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-scan-report
+          path: zap-report.html
+
