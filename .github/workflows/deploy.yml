@@ -25,8 +25,11 @@ jobs:
         with:
           fetch-depth: 0 # Fetch entire history for comprehensive scanning
 
-      - name: Run Gitleaks scan
-        uses: gitleaks/gitleaks-action@v4 # Use the latest stable version
+      - name: Install Gitleaks
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/latest/download/gitleaks-linux-amd64 -o gitleaks
+          chmod +x gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
 
       - name: Run Gitleaks scan and save report
         run: |
@@ -37,7 +40,7 @@ jobs:
 
       - name: Upload Gitleaks report as artifact
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: gitleaks-reports
           path: security/reports
@@ -246,12 +249,7 @@ jobs:
        # Step 2: Install Trivy
       - name: Install Trivy
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y wget
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
-          echo deb https://aquasecurity.github.io/trivy-repo/deb stable main | sudo tee -a /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update -y
-          sudo apt-get install -y trivy
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin
 
 
       # Step 3: Scan source code for vulnerabilities
