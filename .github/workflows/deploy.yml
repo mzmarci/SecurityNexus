@@ -161,6 +161,10 @@ jobs:
       - name: Build Images from docker-compose
         run: docker-compose build
 
+      - name: List built images
+        run: docker images
+
+
       - name: Tag and Push Docker Images
         run: |
           docker tag securitynexus-web:latest $DOCKERHUB_USERNAME/securitynexus-web:latest
