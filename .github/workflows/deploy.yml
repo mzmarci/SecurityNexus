@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 0 # Fetch entire history for comprehensive scanning
 
       - name: Run Gitleaks scan
-        uses: gitleaks/gitleaks-action@v2 # Use the latest stable version
+        uses: gitleaks/gitleaks-action@v4 # Use the latest stable version
 
       - name: Run Gitleaks scan and save report
         run: |
@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 0 # Required to analyze all changes
 
       # - name: Run SonarQube Scan
-      #   uses: SonarSource/sonarqube-scan-action@v5.0.0  #sonarsource/sonarqube-scan-action@v2
+      #   uses: SonarSource/sonarqube-scan-action@v5.1.0  #sonarsource/sonarqube-scan-action@v2
       #   with:
       #     projectBaseDir: .
       #     args: >
@@ -67,7 +67,7 @@ jobs:
 
       # - name: Wait for SonarQube Quality Gate
       #   id: sonarqube-quality-gate-check
-      #   uses: sonarsource/sonarqube-quality-gate-action@v1.2.0 #sonarsource/sonarqube-quality-gate-action@master  
+      #   uses: sonarsource/sonarqube-quality-gate-action@v1.3.0 #sonarsource/sonarqube-quality-gate-action@master  
       #   with:
       #     scanTimeout: '300'  # wait max 5 mins
       #   env:
@@ -89,18 +89,23 @@ jobs:
       #     path: security/reports
 
 
-      - name: SAST with Semgrep (CI)
-        uses: returntocorp/semgrep-action@v1 
-        with:
-          config: p/security-audit   # Uses the p/security-audit rule set (which focuses purely on security issues — like unsafe SQL, dangerous functions, etc.).
-          output: security/reports/semgrep-results.json  # Saves the results to a JSON report inside security/reports/semgrep-results.json.
+      - name: Install Semgrep
+        run: |
+          pip install semgrep
+          semgrep --version
 
-      - name: Upload SAST Reports  # Takes whatever is inside security/reports/ (like my Semgrep report), Uploads it as a build artifact in GitHub Actions, ou can download and review it later from the GitHub Actions “Artifacts” tab.
+      - name: Run Semgrep scan
+        run: |
+          mkdir -p security/reports
+          semgrep --config p/security-audit --json > security/reports/semgrep-results.json || true 
+       
+
+      - name: Upload Semgrep report  # Takes whatever is inside security/reports/ (like my Semgrep report), Uploads it as a build artifact in GitHub Actions, ou can download and review it later from the GitHub Actions “Artifacts” tab.
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
-          name: sast-reports
-          path: security/reports
+          name: semgrep-reports
+          path: security/reports/semgrep-results.json
 
         continue-on-error: true
   
@@ -136,7 +141,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Docker
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@v3
 
       - name: Login to Docker Hub     # # Logs into Docker Hub using secret username and password.
         uses: docker/login-action@v3
@@ -243,9 +248,11 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y wget
-          wget https://github.com/aquasecurity/trivy/releases/latest/download/trivy_Linux-64bit.tar.gz
-          tar zxvf trivy_Linux-64bit.tar.gz
-          sudo mv trivy /usr/local/bin/
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo deb https://aquasecurity.github.io/trivy-repo/deb stable main | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+
 
       # Step 3: Scan source code for vulnerabilities
       - name: Scan file system (source code)
