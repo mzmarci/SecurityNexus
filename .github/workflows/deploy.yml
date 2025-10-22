@@ -174,7 +174,10 @@ jobs:
         run: |
           docker-compose up -d
           docker ps
+          docker logs securitynexus-web-1
           docker-compose logs web
+
+
 
   
   snyk-scan:
