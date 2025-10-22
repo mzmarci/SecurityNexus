@@ -175,6 +175,8 @@ jobs:
           docker-compose down
           docker-compose up -d
           sleep 15
+          docker ps
+          docker-compose logs web
   
   snyk-scan:
     name: Run Snyk Security Scan
